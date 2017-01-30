@@ -2202,7 +2202,9 @@ static void xhci_kick_epctx(XHCIEPContext *epctx, unsigned int streamid)
             xhci_complete_packet(xfer);
         }
         assert(!xfer->running_retry);
-        xhci_ep_free_xfer(epctx->retry);
+        if (xfer->complete) {
+            xhci_ep_free_xfer(epctx->retry);
+        }
         epctx->retry = NULL;
     }
 
