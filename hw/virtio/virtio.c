@@ -92,7 +92,7 @@ struct VirtQueue
 
     uint16_t queue_index;
 
-    int inuse;
+    unsigned int inuse;
 
     uint16_t vector;
     VirtIOHandleOutput handle_output;
@@ -592,23 +592,11 @@ static void virtqueue_undo_map_desc(unsigned int out_num, unsigned int in_num,
 }
 
 static void virtqueue_map_iovec(struct iovec *sg, hwaddr *addr,
-                                unsigned int *num_sg, unsigned int max_size,
+                                unsigned int *num_sg,
                                 int is_write)
 {
     unsigned int i;
     hwaddr len;
-
-    /* Note: this function MUST validate input, some callers
-     * are passing in num_sg values received over the network.
-     */
-    /* TODO: teach all callers that this can fail, and return failure instead
-     * of asserting here.
-     * When we do, we might be able to re-enable NDEBUG below.
-     */
-#ifdef NDEBUG
-#error building with NDEBUG is not supported
-#endif
-    assert(*num_sg <= max_size);
 
     for (i = 0; i < *num_sg; i++) {
         len = sg[i].iov_len;
@@ -626,10 +614,8 @@ static void virtqueue_map_iovec(struct iovec *sg, hwaddr *addr,
 
 void virtqueue_map(VirtQueueElement *elem)
 {
-    virtqueue_map_iovec(elem->in_sg, elem->in_addr, &elem->in_num,
-                        VIRTQUEUE_MAX_SIZE, 1);
-    virtqueue_map_iovec(elem->out_sg, elem->out_addr, &elem->out_num,
-                        VIRTQUEUE_MAX_SIZE, 0);
+    virtqueue_map_iovec(elem->in_sg, elem->in_addr, &elem->in_num, 1);
+    virtqueue_map_iovec(elem->out_sg, elem->out_addr, &elem->out_num, 0);
 }
 
 static void *virtqueue_alloc_element(size_t sz, unsigned out_num, unsigned in_num)
@@ -789,6 +775,16 @@ void *qemu_get_virtqueue_element(QEMUFile *f, size_t sz)
     int i;
 
     qemu_get_buffer(f, (uint8_t *)&data, sizeof(VirtQueueElementOld));
+
+    /* TODO: teach all callers that this can fail, and return failure instead
+     * of asserting here.
+     * When we do, we might be able to re-enable NDEBUG below.
+     */
+#ifdef NDEBUG
+#error building with NDEBUG is not supported
+#endif
+    assert(ARRAY_SIZE(data.in_addr) >= data.in_num);
+    assert(ARRAY_SIZE(data.out_addr) >= data.out_num);
 
     elem = virtqueue_alloc_element(sz, data.out_num, data.in_num);
     elem->index = data.index;
@@ -1260,7 +1256,18 @@ static void virtio_queue_notify_vq(VirtQueue *vq)
 
 void virtio_queue_notify(VirtIODevice *vdev, int n)
 {
-    virtio_queue_notify_vq(&vdev->vq[n]);
+    VirtQueue *vq = &vdev->vq[n];
+
+    if (unlikely(!vq->vring.desc || vdev->broken)) {
+        return;
+    }
+
+    trace_virtio_queue_notify(vdev, vq - vdev->vq, vq);
+    if (vq->handle_aio_output) {
+        event_notifier_set(&vq->host_notifier);
+    } else if (vq->handle_output) {
+        vq->handle_output(vdev, vq);
+    }
 }
 
 uint16_t virtio_queue_vector(VirtIODevice *vdev, int n)
@@ -1855,9 +1862,11 @@ int virtio_load(VirtIODevice *vdev, QEMUFile *f, int version_id)
             /*
              * Some devices migrate VirtQueueElements that have been popped
              * from the avail ring but not yet returned to the used ring.
+             * Since max ring size < UINT16_MAX it's safe to use modulo
+             * UINT16_MAX + 1 subtraction.
              */
-            vdev->vq[i].inuse = vdev->vq[i].last_avail_idx -
-                                vdev->vq[i].used_idx;
+            vdev->vq[i].inuse = (uint16_t)(vdev->vq[i].last_avail_idx -
+                                vdev->vq[i].used_idx);
             if (vdev->vq[i].inuse > vdev->vq[i].vring.num) {
                 error_report("VQ %d size 0x%x < last_avail_idx 0x%x - "
                              "used_idx 0x%x",
