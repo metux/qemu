@@ -1,5 +1,7 @@
-kFreeBSD has stub utimensat() up to version 9.  Without
-this change qemu configure "thinks" that the system has
+From: unknown@debian.org
+Subject: kFreeBSD has stub utimensat() up to version 9.
+
+Without this change qemu configure "thinks" that the system has
 utimensat support and tries to use (CPP) symbols which
 comes in system headers together with utimensat(),
 namely UTIME_OMIT and UTIME_NOW, but thoes are not
